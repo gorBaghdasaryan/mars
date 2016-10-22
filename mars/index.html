@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>PlanetMaker</title>
+		<meta charset="utf-8">
+		
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		
+		<link rel="image_src" type="image/png" href="/PlanetMakerSnapshot2.png" />
+		<meta property="og:image" content="/PlanetMakerSnapshot2.png" />
+		
+		
+		<link href='http://fonts.googleapis.com/css?family=Average+Sans|Rationale' rel='stylesheet' type='text/css'>
+		<link rel="stylesheet" href="lib/jquery/css/jquery-ui-1.10.2.custom.min.css">
+		<link rel="stylesheet" href="planet.css">
+		
+		<script src="lib/three.min.js"></script>
+		<script src="lib/Detector.js"></script>
+		<script src="lib/moment.min.js"></script>
+		<script src="lib/stats.min.js"></script>
+		<script src="lib/json.js"></script>
+		<script src="lib/webtoolkit.base64.js"></script>
+		<script src="lib/modernizr.js"></script>
+		<script src="/lib/ace/ace.js" type="text/javascript" charset="utf-8"></script>
+
+		<script src="lib/jquery/js/jquery-1.9.1.min.js"></script>
+		<script src="lib/jquery/js/jquery-ui-1.10.2.custom.min.js"></script>
+		<script src="lib/jquery/plugins/jquery.colorpicker.js"></script>
+		<link href="lib/jquery/plugins/jquery.colorpicker.css" rel="stylesheet" type="text/css"/>
+		
+		<script src="lib/jquery/plugins/swatches/jquery.ui.colorpicker-pantone.js"></script>
+		<script src="lib/jquery/plugins/parts/jquery.ui.colorpicker-rgbslider.js"></script>
+		<script src="lib/jquery/plugins/parts/jquery.ui.colorpicker-memory.js"></script>
+		
+		<script src="lib/THREEx.screenshot.js"></script>
+		<script src="lib/THREEx.FullScreen.js"></script>
+		<script src="lib/THREEx.WindowResize.js"></script>
+		
+		<script src="postprocessing.js"></script>
+		<script src="shaders.js"></script>
+		<script src="planetmaker.js"></script>
+		
+<style type="text/css" media="screen">
+
+</style>
+		<script id="sceneScriptTemplate" type="x-scene-script/x-scene-script-template">	
+/** Called prior to the scene object update routine which is called before each frame is rendered
+ * 
+ * @param planet The primary PlanetMaker scene container
+ * @param config Scene configuration
+ * @param context THREE.js and environmental context objects
+ * @return True if changes are made to the scene objects that will 
+ *         need to be addressed by their internal update methods. 
+ */
+function onFrame(planet, config, context) {
+
+	return false; 
+}
+
+/** Called prior the the scene being rendered to the screen.
+ * 
+ * @param planet The primary PlanetMaker scene container
+ * @param config Scene configuration
+ * @param context THREE.js and environmental context objects
+ * @return True if changes are made to the scene objects that will 
+ *         need to be addressed by their internal update methods. 
+ */
+function onRender(planet, config, context) {
+
+}
+
+/** Called within renderer the first time it encounters this
+ * script instance to allow in-context initialization.
+ *
+ * @return True if changes are made to the scene objects that will 
+ *         need to be addressed by their internal update methods. 
+ */
+function onScriptInitialize(planet, config, context) {
+
+	return false; 
+}
+
+/** Called within renderer if/when the script instance
+ * is replaced by a new version (such as when 'Apply Changes' 
+ * is clicked). Allows for clean-up of any resources which
+ * may be specific to the script instance.
+ *
+ * @return True if changes are made to the scene objects that will 
+ *         need to be addressed by their internal update methods. 
+ */
+function onScriptDestroy(planet, config, context) {
+	
+	return false; 
+}
+		</script>
+		
+		<script>
+
+/*
+	Note: This is quickly turning into spaghetti code. I'm sorry about that... Some real code
+	refactoring is in store for the near future...
+*/
+
+var gui = null;
+var customTextures = [];
+var planet = null;
+var animator = null;
+var webcam = null;
+
+var onControllerUpdate = function() {
+	if (planet !== null) {
+	
+		if (planet.config.texture == "Webcam" || planet.config.moonTexture == "Webcam" || planet.config.backgroundImage == "Webcam") {
+			initializeWebcam();
+		} else if (webcam) {
+			webcam.pause();
+		}
+	
+		planet.context.configChanged = true;
+	}
+};
+
+var appOptions = {
+	guiOpacity : 0.9	
+};
+
+var onOptionsUpdate = function() {
+	gui.setOpacity(appOptions.guiOpacity);
+};
+
+function displayErrorMessage(title, body)
+{
+	console.error("Error: " + title + ": " + body);
+	
+	$( "#error-message-dialog" ).attr("title", title);
+	$( "#error-message-title" ).text(title);
+	$( "#error-message-body" ).text(body);
+	
+	$( "#error-message-dialog" ).dialog( "open" );
+	
+}
+
+
+		
+
+function isUserMobile()
+{
+	return /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent);
+}
+			
+
+
+jQuery.fn.center = function () {
+    this.css("position","absolute");
+    this.css("top", Math.max(0, (($(window).height() - $(this).outerHeight()) / 2) + 
+                                                $(window).scrollTop()) + "px");
+    this.css("left", Math.max(0, (($(window).width() - $(this).outerWidth()) / 2) + 
+                                                $(window).scrollLeft()) + "px");
+    return this;
+}
+
+
+
+
+
+function initializeWebcam()
+{
+	if (webcam && webcam.isActive()) { 
+		return;
+	} else if (webcam && !webcam.isActive()) { 
+		webcam.start();
+		return;
+	}
+		
+	webcam = new KMG.WebCam();
+	webcam.onError = displayErrorMessage;
+	webcam.start();
+
+	var updateWebcamSnapshot = function() {
+		webcam.capture(function(img) {
+		 
+			var t = new THREE.Texture(img);
+			t.wrapS = THREE.RepeatWrapping;
+			t.needsUpdate = true;
+			
+			var surfaceTexDef = KMG.TextureMap.getTextureDefinitionByName("Webcam");
+			surfaceTexDef.texture = t;
+			
+			var backgroundTexDef = KMG.TextureMap.getBackgroundDefinitionByName("Webcam");
+			backgroundTexDef.texture = t;
+			
+			planet.context.configChanged = true;
+			
+			setTimeout(updateWebcamSnapshot, 100);
+		 }, function() {
+			setTimeout(updateWebcamSnapshot, 1000);
+		 }, false);
+		
+	};
+	setTimeout(updateWebcamSnapshot, 1000);
+}
+
+function exportScene()
+{
+	var service = new KMG.ConfigPersistenceService({});
+	service.save(planet, function(modelId) {
+		var url = "/?model=" + modelId;
+		$( "#model-link" ).val(url);
+		$( "#model-link-dialog" ).dialog( "open" );
+	}, function(reason) {
+		displayErrorMessage("Error", "Failed to create permalink: " + reason);
+	});
+}
+
+
+
+/********************************************
+ New Custom Textures Dialog
+*********************************************/
+var customTextures = {
+
+	
+	setCustomTextureImageThumbnailFromSourceProperties : function(obj, sourceProperties) //url)
+	{
+		
+		customTextures._setCustomTextureImageThumbnail(obj
+								, sourceProperties.url
+								, sourceProperties.name
+								, sourceProperties.field
+								, sourceProperties.index
+								, sourceProperties.uploaded);
+	},
+
+	setCustomTextureImageThumbnail : function(obj, imgObj) //url)
+	{
+		var url = imgObj.prop("src");
+		var name = imgObj.attr("tex-name");
+		var field = imgObj.attr("tex-field");
+		var index = imgObj.attr("tex-index");
+		var uploaded = (imgObj.attr("tex-uploaded") == "true");
+		
+		customTextures._setCustomTextureImageThumbnail(obj, url, name, field, index, uploaded);
+	},
+
+	_setCustomTextureImageThumbnail : function(obj, url, name, field, index, uploaded) //url)
+	{
+		if (url) {
+			url = url.replace("#resolution#", "512x256");
+		}
+		
+		if (url != null && url !== "") {
+			obj.find("img").css("display", "inline");
+			obj.find("img").prop("src", url);
+			obj.find("img").attr("tex-isset", "true");
+			
+			if (!uploaded) {
+				obj.find("img").attr("tex-uploaded", "false");
+				obj.find("img").attr("tex-name", name);
+				obj.find("img").attr("tex-field", field);
+				obj.find("img").attr("tex-index", index);
+			} else {
+				obj.find("img").attr("tex-uploaded", "true");
+			}
+
+			obj.find("div").css("display", "none");
+		} else {
+			obj.find("img").prop("src", "");
+			obj.find("img").attr("tex-isset", "false");
+			obj.find("img").css("display", "none");
+			obj.find("div").css("display", "inline-block");
+		}
+
+	},
+	
+	
+	applyCustomTextures : function(fromObj, toField)
+	{
+	
+		var url = fromObj.prop("src");
+		var name = fromObj.attr("tex-name");
+		var field = fromObj.attr("tex-field");
+		var index = fromObj.attr("tex-index");
+		var uploaded = (fromObj.attr("tex-uploaded") == "true");
+		var isSet = (fromObj.attr("tex-isset") == "true");
+		
+		var customTexDef = KMG.TextureMap.getTextureDefinitionByName("Custom");
+		
+		
+		
+		if (isSet && uploaded && /^data:/i.test(url)) {
+			if (! /^data:/i.test(url)) {
+				url = "";
+			}
+			customTexDef[toField] = url;
+			customTexDef.sourceProperties[toField].uploaded = true;
+		} else if (isSet && !uploaded) {
+			var fromTexDef = KMG.TextureMap.getTextureDefinitionByName(name);
+			if (!fromTexDef) {
+				return;
+			}
+			var url = fromTexDef[field];
+			customTexDef[toField] = url;
+		}
+		
+		if (isSet) {
+			customTexDef.sourceProperties[toField].url = url;
+			customTexDef.sourceProperties[toField].name = name;
+			customTexDef.sourceProperties[toField].index = index;
+			customTexDef.sourceProperties[toField].field = field;
+			customTexDef.sourceProperties[toField].uploaded = uploaded;
+		} else {
+			customTexDef.sourceProperties[toField] = {};
+		}
+	},
+	
+	init : function() {
+	
+
+
+		$( "#new-custom-texture-dialog" ).dialog({
+			width: 800,
+			autoOpen: false,
+			modal: true,
+			show: {
+				effect: "drop",
+				duration: 400
+			},
+			hide: {
+				effect: "drop",
+				duration: 400
+			},
+			buttons: {
+				Ok : function() {
+					$( this ).dialog( "close" );
+					
+					customTextures.applyCustomTextures($( "#custom-surface-texture" ).find("img"), "texture");
+					customTextures.applyCustomTextures($( "#custom-normalmap-texture" ).find("img"), "normalMap");
+					customTextures.applyCustomTextures($( "#custom-specularmap-texture" ).find("img"), "specularMap");
+					customTextures.applyCustomTextures($( "#custom-bumpmap-texture" ).find("img"), "bumpMap");
+					
+					var backgroundTexDef = KMG.TextureMap.getBackgroundDefinitionByName("Custom");
+					backgroundTexDef.texture = $( "#custom-background-texture" ).find("img").prop("src");
+					
+					if (!/^data:/i.test(backgroundTexDef.texture)) {
+						backgroundTexDef.texture = "";
+					}
+					
+					onControllerUpdate();
+				},
+				Cancel : function() {
+					$( this ).dialog( "close" );
+				}
+			},
+			open: function( event, ui ) {
+				var customTexDef = KMG.TextureMap.getTextureDefinitionByName("Custom");
+				
+				customTextures.setCustomTextureImageThumbnailFromSourceProperties($( "#custom-surface-texture" ), customTexDef.sourceProperties.texture);
+				customTextures.setCustomTextureImageThumbnailFromSourceProperties($( "#custom-normalmap-texture" ), customTexDef.sourceProperties.normalMap);
+				customTextures.setCustomTextureImageThumbnailFromSourceProperties($( "#custom-bumpmap-texture" ), customTexDef.sourceProperties.bumpMap);
+				customTextures.setCustomTextureImageThumbnailFromSourceProperties($( "#custom-specularmap-texture" ), customTexDef.sourceProperties.specularMap);
+				
+				var backgroundTexDef = KMG.TextureMap.getBackgroundDefinitionByName("Custom");
+				customTextures._setCustomTextureImageThumbnail($( "#custom-background-texture" ), backgroundTexDef.texture);
+
+			}
+		});
+		$( "#texture-group-tabs" ).tabs().addClass( "ui-tabs-vertical ui-helper-clearfix" );
+		$( "#texture-group-tabs li" ).removeClass( "ui-corner-top" ).addClass( "ui-corner-left" )
+		
+		$( "#fileselect" ).change(function(evt){
+			customTextures.handleFileSelect(evt);
+		});
+		
+		
+		var onDragOverLeave = function(e) {
+			e.stopPropagation();
+			e.preventDefault();
+			e.target.className = (e.type == "dragover" ? "hover" : ""); 
+		};
+		
+		var onDragDrop = function(e) {
+			onDragOverLeave(e);
+			customTextures.handleFileSelect(e);
+		};
+	
+		document.getElementById('filedrag').addEventListener("dragover", onDragOverLeave, false);
+		document.getElementById('filedrag').addEventListener("dragleave", onDragOverLeave, false);
+		document.getElementById('filedrag').addEventListener("drop", onDragDrop, false);
+		document.getElementById('filedrag').style.display = "block";
+		
+		customTextures.createTextureThumbnailList("texture", "surface-thumbnail-list");
+		customTextures.createTextureThumbnailList("normalMap", "normals-thumbnail-list");
+		customTextures.createTextureThumbnailList("specularMap", "specular-thumbnail-list");
+		customTextures.createTextureThumbnailList("bumpMap", "height-thumbnail-list");
+		
+		
+		$( ".custom-texture-div" ).droppable({
+			drop: function( event, ui ) {
+				customTextures.setCustomTextureImageThumbnail($( this ), ui.draggable);//.prop("src"));
+			}
+		});
+		
+		
+		
+		
+		$( "#texture-remove-surface" ).click(function() { customTextures.onRemoveLinkClicked("surface"); });
+		$( "#texture-remove-normals" ).click(function() { customTextures.onRemoveLinkClicked("normals"); });
+		$( "#texture-remove-specular" ).click(function() { customTextures.onRemoveLinkClicked("specular"); });
+		$( "#texture-remove-bumpmap" ).click(function() { customTextures.onRemoveLinkClicked("bumpmap"); });
+		$( "#texture-remove-background" ).click(function() { customTextures.onRemoveLinkClicked("background"); });
+		
+
+
+
+
+	},
+	
+	onRemoveLinkClicked : function(which) {
+		console.info("Clicked: " + which);
+		
+		var customTexDef = KMG.TextureMap.getTextureDefinitionByName("Custom");
+		
+		if (which == "surface") {
+			customTexDef.texture = null;
+			customTexDef.sourceProperties.texture = {};
+			customTextures.setCustomTextureImageThumbnailFromSourceProperties($( "#custom-surface-texture" ), customTexDef.sourceProperties.texture);
+		} else if (which == "normals") {
+			customTexDef.normalMap = null;
+			customTexDef.sourceProperties.normalMap = {};
+			customTextures.setCustomTextureImageThumbnailFromSourceProperties($( "#custom-normalmap-texture" ), customTexDef.sourceProperties.normalMap);
+		} else if (which == "specular") {
+			customTexDef.specularMap = null;
+			customTexDef.sourceProperties.specularMap = {};
+			customTextures.setCustomTextureImageThumbnailFromSourceProperties($( "#custom-specularmap-texture" ), customTexDef.sourceProperties.specularMap);
+		} else if (which == "bumpmap") { 
+			customTexDef.bumpMap = null;
+			customTexDef.sourceProperties.bumpMap = {};
+			customTextures.setCustomTextureImageThumbnailFromSourceProperties($( "#custom-bumpmap-texture" ), customTexDef.sourceProperties.bumpMap);
+		} else if (which == "background") {
+			
+			var backgroundTexDef = KMG.TextureMap.getBackgroundDefinitionByName("Custom");
+			backgroundTexDef.texture = null;
+			customTextures._setCustomTextureImageThumbnail($( "#custom-background-texture" ), backgroundTexDef.texture);
+			
+		}
+		
+	},
+
+	createTextureThumbnailList : function(field, targetId) {
+		var texSet = {};
+		
+		for (var i = 0; i < KMG.textures.length; i++) {
+			if (KMG.textures[i].enabled && KMG.textures[i].name != "Custom" && KMG.textures[i][field]) {
+				var url = KMG.textures[i][field];
+				url = url.replace("#resolution#", "512x256");
+				texSet[url] = {url : url, name : KMG.textures[i].name, field : field, index : i};
+			}
+		}
+		
+		$.each(texSet, function(index, value) {
+			var url = value.url;
+			var name = value.name;
+			var field = value.field;
+			var index = value.index;
+			
+			var id = KMG.GUID.guid();
+			var span = document.createElement('span');
+			span.innerHTML = ['<img class="texture-thumbnail-img" src="', url,
+									'" title="', name, '"', ' id="texture_', id, '" tex-field="',
+									field, '" tex-index="', index, '" tex-uploaded="false" tex-name="', name, '" />'
+									].join('');
+			document.getElementById(targetId).insertBefore(span, null);
+			$( "#texture_"+id ).draggable({revert: true, helper: "clone", revertDuration: 0});
+		});
+
+	},
+	
+	//http://www.html5rocks.com/en/tutorials/file/dndfiles/
+	//http://blogs.sitepointstatic.com/examples/tech/filedrag/1/index.html
+	handleFileSelect : function(evt) {
+    
+		var files = evt.target.files || evt.dataTransfer.files;
+		
+		for (var i = 0, f; f = files[i]; i++) {
+
+			if (!f.type.match('image.*')) {
+				continue;
+			}
+			
+			var reader = new FileReader();
+
+			reader.onload = (function(theFile) {
+				return function(e) {
+					
+					var id = KMG.GUID.guid();
+					
+					console.info("Creating custom uploaded texture with id " + id);
+					var span = document.createElement('span');
+					span.innerHTML = ['<img class="texture-thumbnail-img" src="', e.target.result,
+									'" title="', escape(theFile.name), '"', ' id="custom_texture_', id, '" tex-uploaded="true" tex-isset="true" />'].join('');
+					document.getElementById('custom-list').insertBefore(span, null);
+
+					$( "#custom_texture_"+id ).draggable({revert: true, helper: "clone", revertDuration: 0});
+				};
+			})(f);
+
+			reader.readAsDataURL(f);
+		}
+	}
+
+};
+
+
+
+
+$(function() {
+	
+
+	if (true) {
+		$( "#page-title-link" ).css("color", "#FF0000");
+		$( "#page-title-link" ).text($( "#page-title-link" ).text() + " (devmode)");
+		$( "#share-buttons" ).css("display", "none");
+		$( "#ce" ).css("display", "none");
+	}
+	
+	if (AppEnv.isEmbedded()) {
+		$( ".hide-on-embedded" ).css("display", "none");
+	}
+	
+	$( "#loading-progressbar" ).progressbar({
+      value: false
+    });
+	
+	$( "#loading-progressbar" ).center();
+	$( "#progress-label" ).center();
+	
+	
+	var visibleAboutDialogSection = function() {
+		if ($( "#about-dialog-about" ).css("display") === "block") {
+			return $( "#about-dialog-about" );
+		} else if ($( "#about-dialog-instructions" ).css("display") === "block") {
+			return $( "#about-dialog-instructions" );
+		} else if ($( "#about-dialog-changes" ).css("display") === "block") {
+			return $( "#about-dialog-changes" );
+		} else {
+			return null;
+		}
+	};
+	
+	var onAboutDialogSection = function(section) {
+	
+		var visibleSection = visibleAboutDialogSection();
+		if (visibleSection !== null) {
+			var options = {};
+			visibleSection.hide( "fade", 200, function() {
+				$( "#about-dialog-"+section ).removeAttr( "style" ).hide().fadeIn(200);
+			});
+		} else {
+			$( "#about-dialog-"+section ).removeAttr( "style" ).hide().fadeIn(200);
+		}
+	};
+	
+	$( "#about-dialog-radios" ).buttonset();
+	$( "#radio_about" ).change(function(e) {
+		onAboutDialogSection("about");
+	});
+	$( "#radio_instructions" ).change(function(e) {
+		onAboutDialogSection("instructions");
+	});
+	$( "#radio_changes" ).change(function(e) {
+		onAboutDialogSection("changes");
+	});
+	$( "#about-dialog-about" ).css("display", "none");
+	$( "#about-dialog-instructions" ).css("display", "none");
+	$( "#about-dialog-changes" ).css("display", "none");
+	onAboutDialogSection("about");
+	$("input:radio[name='about_dialog_radio'][value='about']").prop("checked", true);
+	
+	if (isUserMobile()) {
+		$( ".hide-from-mobile" ).css("display", "none");
+	}
+	
+	var config = KMG.Util.extend({}, KMG.DefaultConfig);
+	config.textureResolution = (isUserMobile() ? "1024x512" : "2048x1024");
+	
+	
+	var editor = ace.edit("scene-script-editor");
+	var editorInitialized = false;
+	$( "#script-dialog" ).dialog({
+		width: 700,
+		height: 500,
+		autoOpen: false,
+		show: {
+			effect: "drop",
+			duration: 400
+		},
+		hide: {
+			effect: "drop",
+			duration: 400
+		},
+		close : function(event, ui) {
+			KMG.keyCommandBindManager.bindAll();
+		},
+		open: function( event, ui ) {
+			KMG.keyCommandBindManager.unbindAll();
+			if (!editorInitialized) {
+				editor.setTheme("ace/theme/monokai");
+				editor.getSession().setMode("ace/mode/javascript");
+				editor.gotoLine(0);
+				editorInitialized = true;
+			}
+		}
+	});
+	
+	editor.setValue($( "#sceneScriptTemplate" ).text());
+
+	$( "#use-script" ).button().click(function(e) {
+		console.info("Checked: " + $(this).prop('checked'));
+	});
+	$( "#close-script" ).button().click(function(e) {
+		$( "#script-dialog" ).dialog( "close" );
+	});
+	
+	$( "#apply-script" ).button().click(function(e) {
+		// TODO:  Add some error handling...
+		//
+
+		try {
+			var script = new KMG.SceneScript(editor.getValue());
+			planet.applySceneScriptInstance(script);
+		} catch (ex) {
+			displayErrorMessage("Script Compilation Error", ex);
+		}
+	});
+
+	
+	$( "#dialog" ).dialog({
+		width: 600,
+		autoOpen: false,
+		show: {
+			effect: "drop",
+			duration: 400
+		},
+		hide: {
+			effect: "drop",
+			duration: 400
+		}
+	});
+	$( "#about-link" ).click(function() {
+		
+		$( "#dialog" ).dialog( "open" );
+
+	});
+	$( "#model-link-dialog" ).dialog({
+		width: 600,
+		autoOpen: false,
+		show: {
+			effect: "drop",
+			duration: 400
+		},
+		hide: {
+			effect: "drop",
+			duration: 400
+		}
+	});
+	
+	$( "#examples-dialog" ).dialog({
+		width: 600,
+		height: 500,
+		autoOpen: false,
+		show: {
+			effect: "drop",
+			duration: 400
+		},
+		hide: {
+			effect: "drop",
+			duration: 400
+		},
+		buttons: {
+			Cancel: function() {
+				$( this ).dialog( "close" );
+			}
+		}
+	});
+	
+	$( "#error-message-dialog" ).dialog({
+		width: 600,
+		autoOpen: false,
+		modal: true,
+		show: {
+			effect: "drop",
+			duration: 400
+		},
+		hide: {
+			effect: "drop",
+			duration: 400
+		},
+		buttons: {
+			Ok : function() {
+				$( this ).dialog( "close" );
+			}
+		}
+	});
+
+	
+	
+	customTextures.init();
+	
+	
+	if (!window.WebGLRenderingContext || !Detector.webgl) {
+		Detector.addGetWebGLMessage();
+	}
+
+		
+	var modelId = AppEnv.getUrlVar('model');
+	if (modelId !== undefined) {
+		var service = new KMG.ConfigPersistenceService({});
+		service.load(modelId, function(config, view, camera, textures, sceneScript) {
+			
+			var texDef = KMG.TextureMap.getTextureDefinitionByName("Custom");
+			texDef.texture = textures.texture;
+			texDef.normalMap = textures.normalMap;
+			texDef.specularMap = textures.specularMap;
+			texDef.bumpMap = textures.bumpMap;
+			texDef.sourceProperties = textures.sourceProperties;
+
+			var bgTexDef = KMG.TextureMap.getBackgroundDefinitionByName("Custom");
+			bgTexDef.texture = textures.background;
+			
+			editor.setValue(sceneScript);
+			initializeModelAsync(config, view, camera, true, modelId, sceneScript);
+			
+		}, function(reason) {
+			displayErrorMessage("Error", "Failed to load model: " + reason);
+			//console.warn("Model load failed: " + reason);
+		});
+	} else {
+		initializeModelAsync(config, null, null, true, null, null);
+	}
+			
+
+
+	//	$( "#loading-screen" ).css("display", "none");
+
+	
+});
+
+
+function initializeModelAsync(config, view, cameraConfig, noAnimation, modelId, sceneScript)
+{
+
+	setTimeout(function() {
+		initializeModel(config, view, cameraConfig, noAnimation, modelId, sceneScript);
+	}, 1000);
+
+}
+
+function initializeModel(config, view, cameraConfig, noAnimation, modelId, sceneScript)
+{
+
+	if (!AppEnv.isDevMode() || AppEnv.isEmbedded()) {
+		config.enableFps = false;
+	}
+	
+	
+	$( "#use-script" ).attr("checked", config.useScript).button('refresh');
+	
+	var sceneReadyCallback = function() {
+		if (animator) {
+			animator.start();
+		}
+		
+		$( "#loading-screen" ).css("display", "none");
+		
+		
+		$('#page-title-container').removeClass().addClass("animated flipInY");
+		var wait = window.setTimeout( function(){
+			$('#page-title-container').removeClass()},
+			1300
+		);
+		
+		
+	};
+	
+	var resourceLoadingStart = function(url) {
+		console.log("sadjsfdkskdjfkjsdkfj");
+		$( "#loading-spinner" ).css("display", "inline");
+	};
+	
+	var resourceLoadingFinish = function(successful, remainingResources) {
+		if (remainingResources == 0) {
+			$( "#loading-spinner" ).css("display", "none");
+		}
+	};
+	
+	var webGlErrorCallback = function(ex) {
+		console.error("WebGL Exception Thrown: " + ex);
+		
+		// Disable stop until I prove this is necessary in every case
+		//planet.stop();
+	};
+
+	var animationStoppedCallback = function() {
+		console.warn("Application Animation Has Stopped!");
+	};
+	
+	var contextLostCallback = function(event) {
+		console.error("UI: WebGL Context Lost, displaying notification");
+		displayErrorMessage("WebGL Error", "WebGL Context Lost! Please refresh to restart the application");
+	};
+	
+	var sceneCallbacks = {
+		sceneReadyCallback : sceneReadyCallback,
+		resourceLoadingStart : resourceLoadingStart,
+		resourceLoadingFinish : resourceLoadingFinish,
+		webGlErrorCallback : webGlErrorCallback,
+		animationStoppedCallback : animationStoppedCallback,
+		contextLostCallback : contextLostCallback
+	};
+	
+	
+	var callbacks = {
+		setCustomTexture : function()
+		{
+			$( "#custom-texture-dialog" ).dialog( "open" );
+		},
+
+		reset : function()
+		{
+			location.reload();
+		}
+	
+	};
+	
+	
+	var texNames = [];
+	for (var i = 0; i < KMG.textures.length; i++) {
+		if (KMG.textures[i].enabled) {
+			texNames.push(KMG.textures[i].name);
+		}
+	}
+	
+	var backgroundNames = [];
+	for (var i = 0; i < KMG.backgrounds.length; i++) {
+		if (KMG.backgrounds[i].enabled == true) {
+			backgroundNames.push(KMG.backgrounds[i].name);
+		}
+	}
+	
+	var starFlareNames = [];
+	for (var i = 0; i < KMG.starFlares.length; i++) {
+		starFlareNames[i] = KMG.starFlares[i].name;
+	}
+	
+	var guiChangeListener = function() {
+		onControllerUpdate();
+	}
+	
+	planet = new KMG.Planet(document.getElementById( 'container' ), config, sceneCallbacks, cameraConfig, view);
+	
+	if (!AppEnv.isEmbedded()) {
+	
+		gui = new KMG.GUI(config, guiChangeListener);
+		
+		gui.onVisibilityChanged = function(visible) {
+			var setDisplay = visible ? "block" : "none";
+			$("#page-title-container").css("display", setDisplay);
+			$("#inline-instructions").css("display", setDisplay);
+			$("#instructions-link-container").css("display", setDisplay);
+			$("#stats").css("display", setDisplay);
+			$("#share-buttons").css("display", setDisplay);
+			$("#ce").css("display", setDisplay);
+		};
+		
+		var sceneGui = gui.left.createBlock("Scene");
+		sceneGui.addSelect('textureResolution', 'Texture Resolution:', ["4096x2048"]);
+
+		
+		var surfaceGui = gui.left.createBlock("Surface");
+		surfaceGui.addSelect('texture', 'Texture:', texNames);
+		surfaceGui.addRange('surfaceDetail', 'Detail Level:', 0.0, 5.0, 0.1);
+		surfaceGui.addRange('shininess', 'Shininess:', 0, 128);
+		surfaceGui.addRange('ambientIntensity', 'Ambient Light:', 0, 255);
+		surfaceGui.addRange('emissiveIntensity', 'Emissive Light:', 0, 255);
+		
+	}
+	
+	function createMoon(moonConfig)
+	{
+		planet.addMoon(moonConfig);
+
+		if (createMoonGui) {
+			createMoonGui(moonConfig);
+		}
+			
+		planet.context.configChanged = true;
+	};
+	
+	if (!config.version || config.version < 2.0) {
+			var moonConfig = KMG.Util.extend(KMG.DefaultMoonConfig, config);
+			createMoon(moonConfig);
+	} else if (config.moons && config.version >= 2.0) {
+		for (var i = 0; i < config.moons.length; i++) {
+			createMoon(config.moons[i]);
+		}
+	}
+	
+	
+	if (!noAnimation) {
+		animator = new KMG.AnimateController({
+			startDistance : 2000.0,
+			minDistance : config.camera.positionZ - 150,
+			integralStart : 1,
+			integralEnd : 6,
+			integralMax : 5,
+			integralMin : 0.5,
+			speed : 0.05,
+			wait : 50, //ms
+			distanceIntegral : function(x) {
+				return Math.sin(x / Math.PI + 8.4823) + Math.cos(0.477465 * x) + Math.cos(x) + 2.0;
+			},
+			rotateIntegral : function(x) {
+				return -2.5 * Math.sin(x / 3 + 4.71239) - Math.sin(x / Math.PI + 8.4823) - Math.cos(0.477465 * x) - Math.cos(x) + 0.5;
+			}
+		}, planet.context.camera);
+		planet.animators.push(animator);
+		animator.rewind();
+	}
+	
+	
+	if (sceneScript) {
+		try {
+			var script = new KMG.SceneScript(sceneScript);
+			planet.applySceneScriptInstance(script);
+		} catch (ex) {
+			displayErrorMessage("Script Compilation Error", ex);
+		}
+	}
+	
+	
+	planet.start();
+	
+	
+	
+	
+	
+	KMG.keyCommandBindManager.engine = planet;
+	var bindResult = KMG.keyCommandBindManager.bindAll();
+	if (bindResult.screenshot) {
+		document.getElementById('inline-instructions').innerHTML	+= ", <i>f</i> for fullscreen.";
+	}
+
+}
+
+
+		</script>
+	</head>
+	<body>
+	
+		
+		<style>
+#kmg-video { -webkit-transform: scaleX(1); -o-transform: scaleX( 1 ); display: none; }
+		</style>
+		<div id="container"></div>
+	
+		<div id="script-dialog" title="SceneScript Editor">
+			<div id="script-toolbar" class="ui-widget-header ui-corner-all">
+				<input type="checkbox" id="use-script" /><label for="use-script">Use Script</label>
+				<button id="apply-script">Apply Changes</button>
+				<button id="close-script">Close</button>
+			</div>
+			<div id="scene-script-editor"></div>
+		</div>
+	
+		
+		<div id="new-custom-texture-dialog" title="Set Custom Textures">
+			<div class="ui-widget input-form">
+				
+				<div class="custom-textures-left">
+					
+					<div id="texture-group-tabs">
+						<ul>
+							<li><a href="#uploaded-tab">Uploaded</a></li>
+							<li><a href="#surface-tab">Surface</a></li>
+							<li><a href="#normals-tab">Normals</a></li>
+							<li><a href="#height-tab">Height</a></li>
+							<li><a href="#specular-tab">Specular</a></li>
+						</ul>
+						<div id="uploaded-tab">
+							<div>
+								<label for="fileselect">Files to upload:</label>
+								<input type="file" id="fileselect" name="fileselect[]" multiple="multiple" />
+								<div id="filedrag">or drop files here</div>
+							</div>
+							<div class="texture-thumbnail-list">
+								<output id="custom-list" ></output>
+							</div>
+						</div>
+						<div id="surface-tab">
+							<div class="texture-tab-header">Surface</div>
+							<div id="surface-thumbnail-list" class="texture-thumbnail-list">
+							
+							</div>
+						</div>
+						<div id="normals-tab">
+							<div class="texture-tab-header">Normals</div>
+							<div id="normals-thumbnail-list" class="texture-thumbnail-list">
+							
+							</div>
+						</div>
+						<div id="height-tab">
+							<div class="texture-tab-header">Height Map</div>
+							<div id="height-thumbnail-list" class="texture-thumbnail-list">
+							
+							</div>
+						</div>
+						<div id="specular-tab">
+							<div class="texture-tab-header">Specular</div>
+							<div id="specular-thumbnail-list" class="texture-thumbnail-list">
+							
+							</div>
+						</div>
+					</div>
+					
+					
+					
+				</div>
+			</div>
+		</div>
+		
+	
+	
+		
+
+		
+
+		
+				</div>
+		<div id="loading-screen">
+		
+			<div id="loading-parts">
+				<div id="loading-progressbar">
+					
+				</div>
+				<div id="progress-label">Loading...2</div>
+			</div>
+		</div>
+		
+
+	</body>
+</html>
